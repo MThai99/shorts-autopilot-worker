@@ -1,0 +1,75 @@
+name: Render Short
+
+# Make goi quy trinh nay qua API (repository_dispatch, event_type = render_video).
+# Cung co the chay tay: tab Actions > Render Short > Run workflow (dan job JSON).
+on:
+  repository_dispatch:
+    types: [render_video]
+  workflow_dispatch:
+    inputs:
+      job_json:
+        description: 'Job JSON (video_id, voiceover, asset_urls)'
+        required: true
+
+permissions:
+  contents: write   # de tao ban nhap (draft release) chua video
+
+concurrency:
+  group: render-short
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cai FFmpeg, Piper va giong tieng Viet
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install piper-tts==1.8.0
+          mkdir -p voices
+          BASE=https://huggingface.co/rhasspy/piper-voices/resolve/main/vi/vi_VN/vais1000/medium
+          curl -fL -o voices/vi.onnx      "$BASE/vi_VN-vais1000-medium.onnx"
+          curl -fL -o voices/vi.onnx.json "$BASE/vi_VN-vais1000-medium.onnx.json"
+
+      - name: Tao job.json
+        env:
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          MANUAL: ${{ github.event.inputs.job_json }}
+        run: |
+          if [ -n "$MANUAL" ]; then printf '%s' "$MANUAL" > job.json; else printf '%s' "$PAYLOAD" > job.json; fi
+          python3 -c "import json; j=json.load(open('job.json')); print('video_id:', j.get('video_id')); print('so tu lieu:', len(j.get('asset_urls', [])))"
+
+      - name: Dung video
+        env:
+          PIPER_BIN: piper
+          PIPER_MODEL: ${{ github.workspace }}/voices/vi.onnx
+          SUB_FONT: DejaVu Sans
+        run: |
+          mkdir -p out
+          python3 shorts_worker.py job.json out/video.mp4 | tee out/result.json
+
+      - name: Luu ban nhap de duyet (chua dang)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VID=$(python3 -c "import json; print(json.load(open('job.json'))['video_id'])")
+          gh release create "${VID}-r${GITHUB_RUN_NUMBER}" out/video.mp4 out/result.json \
+            --draft --title "${VID}" \
+            --notes "Video dung tu dong, CHO DUYET. Chua duoc dang len bat ky nen tang nao."
+
+      - name: Luu ket qua (ke ca khi loi)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-output
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 7
