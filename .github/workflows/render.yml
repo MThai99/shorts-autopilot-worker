@@ -53,6 +53,7 @@ jobs:
           PIPER_MODEL: ${{ github.workspace }}/voices/vi.onnx
           SUB_FONT: DejaVu Sans
         run: |
+          set -o pipefail
           mkdir -p out
           python3 shorts_worker.py job.json out/video.mp4 | tee out/result.json
 
